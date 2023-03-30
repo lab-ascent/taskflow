@@ -2,6 +2,8 @@
 
 #include "observer.hpp"
 #include "taskflow.hpp"
+#include <chrono>
+#include <thread>
 
 /**
 @file executor.hpp
@@ -894,6 +896,8 @@ inline int Executor::this_worker_id() const {
 }
 
 // Procedure: _spawn
+// This dealing with how threads are created and their affinity. Not
+// when the threads are invoked for a given executor.
 inline void Executor::_spawn(size_t N) {
 
   std::mutex mutex;
@@ -1209,6 +1213,7 @@ inline void Executor::_schedule(Node* node) {
   // We need to fetch p before the release such that the read 
   // operation is synchronized properly with other thread to
   // void data race.
+  //std::cout << "At _schedule with Node* node\n";
   auto p = node->_priority;
 
   node->_state.fetch_or(Node::READY, std::memory_order_release);
@@ -1263,6 +1268,11 @@ inline void Executor::_schedule(Worker& worker, const SmallVector<Node*>& nodes)
 // Procedure: _schedule
 inline void Executor::_schedule(const SmallVector<Node*>& nodes) {
 
+  // using namespace std::this_thread;
+  // using namespace std::chrono_literals;
+  // using std::chrono::system_clock;
+
+  //std::cout << "At _schedule with SmallVector<Node*>& nodes\n";
   // parent topology may be removed!
   const auto num_nodes = nodes.size();
 
@@ -1278,6 +1288,10 @@ inline void Executor::_schedule(const SmallVector<Node*>& nodes) {
     for(size_t k=0; k<num_nodes; ++k) {
       auto p = nodes[k]->_priority;
       nodes[k]->_state.fetch_or(Node::READY, std::memory_order_release);
+      /*
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);
+      */
       _wsq.push(nodes[k], p);
     }
   }
@@ -1287,10 +1301,13 @@ inline void Executor::_schedule(const SmallVector<Node*>& nodes) {
 
 // Procedure: _invoke
 inline void Executor::_invoke(Worker& worker, Node* node) {
+  using namespace std::this_thread;
+  using namespace std::chrono_literals;
+  using std::chrono::system_clock;
 
   // synchronize all outstanding memory operations caused by reordering
   while(!(node->_state.load(std::memory_order_acquire) & Node::READY));
-
+  
   begin_invoke:
 
   // no need to do other things if the topology is cancelled
@@ -1303,6 +1320,7 @@ inline void Executor::_invoke(Worker& worker, Node* node) {
   if(node->_semaphores && !node->_semaphores->to_acquire.empty()) {
     SmallVector<Node*> nodes;
     if(!node->_acquire_all(nodes)) {
+      std::cout << "After begin_invoke and acquiring semaphores.\n";
       _schedule(worker, nodes);
       return;
     }
@@ -1317,36 +1335,51 @@ inline void Executor::_invoke(Worker& worker, Node* node) {
   switch(node->_handle.index()) {
     // static task
     case Node::STATIC:{
+      std::cout << "After begin_invoke and NODE STATIC.\n";
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);
       _invoke_static_task(worker, node);
     }
     break;
 
     // dynamic task
     case Node::DYNAMIC: {
+      std::cout << "After begin_invoke and NODE DYNAMIC.\n";    
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);  
       _invoke_dynamic_task(worker, node);
     }
     break;
 
     // condition task
     case Node::CONDITION: {
+      std::cout << "After begin_invoke and NODE CONDITION.\n";
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);                  
       _invoke_condition_task(worker, node, conds);
     }
     break;
 
     // multi-condition task
     case Node::MULTI_CONDITION: {
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);        
       _invoke_multi_condition_task(worker, node, conds);
     }
     break;
 
     // module task
     case Node::MODULE: {
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);  
       _invoke_module_task(worker, node);
     }
     break;
 
     // async task
     case Node::ASYNC: {
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);        
       _invoke_async_task(worker, node);
       _tear_down_async(node);
       return ;
@@ -1355,6 +1388,8 @@ inline void Executor::_invoke(Worker& worker, Node* node) {
 
     // silent async task
     case Node::SILENT_ASYNC: {
+      sleep_for(10ns);
+      sleep_until(system_clock::now() + 5s);        
       _invoke_silent_async_task(worker, node);
       _tear_down_async(node);
       return ;
@@ -1394,7 +1429,6 @@ inline void Executor::_invoke(Worker& worker, Node* node) {
 
   // Invoke the task based on the corresponding type
   switch(node->_handle.index()) {
-
     // condition and multi-condition tasks
     case Node::CONDITION:
     case Node::MULTI_CONDITION: {
@@ -1406,32 +1440,41 @@ inline void Executor::_invoke(Worker& worker, Node* node) {
           j.fetch_add(1);
           if(s->_priority <= max_p) {
             if(cache) {
+              sleep_for(10ns);
+              sleep_until(system_clock::now() + 5s);              
               _schedule(worker, cache);
             }
             cache = s;
             max_p = s->_priority;
           }
           else {
+              sleep_for(10ns);
+              sleep_until(system_clock::now() + 5s);            
             _schedule(worker, s);
           }
         }
       }
     }
     break;
-
+    
     // non-condition task
     default: {
+      // std::cout << "In second default case.\n";
       for(size_t i=0; i<node->_successors.size(); ++i) {
         if(auto s = node->_successors[i]; --(s->_join_counter) == 0) {
           j.fetch_add(1);
           if(s->_priority <= max_p) {
             if(cache) {
+              // sleep_for(10ns);
+              // sleep_until(system_clock::now() + 5s);
               _schedule(worker, cache);
             }
             cache = s;
             max_p = s->_priority;
           }
           else {
+            // sleep_for(10ns);
+            // sleep_until(system_clock::now() + 5s);            
             _schedule(worker, s);
           }
         }
@@ -1736,7 +1779,7 @@ template <typename P, typename C>
 tf::Future<void> Executor::run_until(Taskflow& f, P&& p, C&& c) {
 
   _increment_topology();
-
+  //std::cout << "Debjit\n";
   // Need to check the empty under the lock since dynamic task may
   // define detached blocks that modify the taskflow at the same time
   bool empty;
@@ -1842,7 +1885,7 @@ inline void Executor::wait_for_all() {
 
 // Function: _set_up_topology
 inline void Executor::_set_up_topology(Worker* worker, Topology* tpg) {
-
+    
   // ---- under taskflow lock ----
 
   tpg->_sources.clear();
@@ -1865,9 +1908,11 @@ inline void Executor::_set_up_topology(Worker* worker, Topology* tpg) {
   tpg->_join_counter = tpg->_sources.size();
 
   if(worker) {
+      //std::cout << "Scheduled with worker\n"; 
     _schedule(*worker, tpg->_sources);
   }
   else {
+      //std::cout << "Scheduled without worker\n"; 
     _schedule(tpg->_sources);
   }
 }
